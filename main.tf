@@ -28,7 +28,7 @@ provider "aws" {
 }
 
 locals {
-  name   = "gha-tf-aws-ecs-example"
+  name = "gha-tf-aws-ecs-example"
 
   user_data = <<-EOT
     #!/bin/bash
@@ -49,7 +49,7 @@ locals {
 ################################################################################
 
 module "ecs" {
-  source = "terraform-aws-modules/ecs/aws"
+  source  = "terraform-aws-modules/ecs/aws"
   version = "4.1.3"
 
   cluster_name = local.name
