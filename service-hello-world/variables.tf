@@ -18,5 +18,11 @@ variable "cluster_id" {
 variable "app_image" {
   description = "The app image to run on ECS."
   type = string
-  default = "ghcr.io/nwmahoney/hello-world-nginx:latest"
+  default = "nginx"
+}
+
+variable "app_port" {
+  description = "The port where the app will be exposed."
+  type = number
+  default = 80
 }

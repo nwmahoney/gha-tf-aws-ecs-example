@@ -31,3 +31,5 @@ This example was created by following [Hashicorp's *Automate Terraform with GitH
           }
         }
         ```
+5. **TODO:** Do we need to comment out the `hello_world` module until ECR is set up and the app image has been pushed?
+    - **Note:** If building the docker image on an Apple M1 chip, use `docker build -t hello-world-nginx --platform=linux/amd64 .`

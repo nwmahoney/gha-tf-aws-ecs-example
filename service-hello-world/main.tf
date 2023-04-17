@@ -13,6 +13,12 @@ resource "aws_ecs_task_definition" "this" {
         image  = var.app_image
         cpu    = 0
         memory = 128
+        portMappings = [
+          {
+            containerPort = var.app_port,
+            hostPort      = var.app_port,
+          }
+        ]
         logConfiguration = {
           logDriver = "awslogs"
           options = {
