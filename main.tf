@@ -23,10 +23,6 @@ provider "aws" {
 ################################################################################
 # Copied from https://github.com/terraform-aws-modules/terraform-aws-ecs/blob/v4.1.3/examples/complete/main.tf
 
-provider "aws" {
-  region = var.region
-}
-
 locals {
   name = "gha-tf-aws-ecs-example"
 
