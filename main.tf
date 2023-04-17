@@ -77,7 +77,7 @@ module "ecs" {
 module "ec2_profile" {
   source = "terraform-aws-modules/ecs/aws//modules/ecs-instance-profile"
 
-  name = local.name
+  name    = local.name
   version = "3.1.0"
 
   tags = {
