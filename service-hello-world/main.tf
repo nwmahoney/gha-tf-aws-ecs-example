@@ -10,13 +10,13 @@ resource "aws_ecs_task_definition" "this" {
 [
   {
     "name": "hello_world",
-    "image": "hello-world",
+    "image": "nginx:latest",
     "cpu": 0,
     "memory": 128,
     "logConfiguration": {
       "logDriver": "awslogs",
       "options": {
-        "awslogs-region": "eu-west-1",
+        "awslogs-region": "${var.region}",
         "awslogs-group": "${aws_cloudwatch_log_group.this.name}",
         "awslogs-stream-prefix": "ec2"
       }
