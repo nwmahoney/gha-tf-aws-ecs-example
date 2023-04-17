@@ -2,7 +2,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "4.52.0"
+      version = ">=4.6"
     }
   }
   required_version = ">= 1.1.0"
@@ -21,18 +21,173 @@ provider "aws" {
 }
 
 ################################################################################
-# Copied from https://github.com/terraform-aws-modules/terraform-aws-ecs/blob/v3.1.0/examples/complete-ecs/main.tf
+# Copied from https://github.com/terraform-aws-modules/terraform-aws-ecs/blob/v4.1.3/examples/complete/main.tf
 
-locals {
-  name        = "gha-tf-aws-ecs-example"
-  environment = "dev"
-
-  # This is the convention we use to know what belongs to each other
-  ec2_resources_name = "${local.name}-${local.environment}"
+provider "aws" {
+  region = var.region
 }
 
-data "aws_availability_zones" "available" {
-  state = "available"
+locals {
+  name   = "gha-tf-aws-ecs-example"
+
+  user_data = <<-EOT
+    #!/bin/bash
+    cat <<'EOF' >> /etc/ecs/ecs.config
+    ECS_CLUSTER=${local.name}
+    ECS_LOGLEVEL=debug
+    EOF
+  EOT
+
+  tags = {
+    Name       = local.name
+    Repository = "https://github.com/nwmahoney/gha-tf-aws-ecs-example"
+  }
+}
+
+################################################################################
+# ECS Module
+################################################################################
+
+module "ecs" {
+  source = "terraform-aws-modules/ecs/aws"
+  version = "4.1.3"
+
+  cluster_name = local.name
+
+  cluster_configuration = {
+    execute_command_configuration = {
+      logging = "OVERRIDE"
+      log_configuration = {
+        # You can set a simple string and ECS will create the CloudWatch log group for you
+        # or you can create the resource yourself as shown here to better manage retetion, tagging, etc.
+        # Embedding it into the module is not trivial and therefore it is externalized
+        cloud_watch_log_group_name = aws_cloudwatch_log_group.this.name
+      }
+    }
+  }
+
+  default_capacity_provider_use_fargate = false
+
+  # Capacity provider - Fargate
+  fargate_capacity_providers = {
+    FARGATE      = {}
+    FARGATE_SPOT = {}
+  }
+
+  # Capacity provider - autoscaling groups
+  autoscaling_capacity_providers = {
+    one = {
+      auto_scaling_group_arn         = module.autoscaling["one"].autoscaling_group_arn
+      managed_termination_protection = "ENABLED"
+
+      managed_scaling = {
+        maximum_scaling_step_size = 5
+        minimum_scaling_step_size = 1
+        status                    = "ENABLED"
+        target_capacity           = 60
+      }
+
+      default_capacity_provider_strategy = {
+        weight = 60
+        base   = 20
+      }
+    }
+    two = {
+      auto_scaling_group_arn         = module.autoscaling["two"].autoscaling_group_arn
+      managed_termination_protection = "ENABLED"
+
+      managed_scaling = {
+        maximum_scaling_step_size = 15
+        minimum_scaling_step_size = 5
+        status                    = "ENABLED"
+        target_capacity           = 90
+      }
+
+      default_capacity_provider_strategy = {
+        weight = 40
+      }
+    }
+  }
+
+  tags = local.tags
+}
+
+module "hello_world" {
+  source = "./service-hello-world"
+
+  cluster_id = module.ecs.cluster_id
+}
+
+################################################################################
+# Supporting Resources
+################################################################################
+
+# https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html#ecs-optimized-ami-linux
+data "aws_ssm_parameter" "ecs_optimized_ami" {
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended"
+}
+
+module "autoscaling" {
+  source  = "terraform-aws-modules/autoscaling/aws"
+  version = "~> 6.5"
+
+  for_each = {
+    one = {
+      instance_type = "t3.micro"
+    }
+    two = {
+      instance_type = "t3.small"
+    }
+  }
+
+  name = "${local.name}-${each.key}"
+
+  image_id      = jsondecode(data.aws_ssm_parameter.ecs_optimized_ami.value)["image_id"]
+  instance_type = each.value.instance_type
+
+  security_groups                 = [module.autoscaling_sg.security_group_id]
+  user_data                       = base64encode(local.user_data)
+  ignore_desired_capacity_changes = true
+
+  create_iam_instance_profile = true
+  iam_role_name               = local.name
+  iam_role_description        = "ECS role for ${local.name}"
+  iam_role_policies = {
+    AmazonEC2ContainerServiceforEC2Role = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+    AmazonSSMManagedInstanceCore        = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  vpc_zone_identifier = module.vpc.private_subnets
+  health_check_type   = "EC2"
+  min_size            = 0
+  max_size            = 2
+  desired_capacity    = 1
+
+  # https://github.com/hashicorp/terraform-provider-aws/issues/12582
+  autoscaling_group_tags = {
+    AmazonECSManaged = true
+  }
+
+  # Required for  managed_termination_protection = "ENABLED"
+  protect_from_scale_in = true
+
+  tags = local.tags
+}
+
+module "autoscaling_sg" {
+  source  = "terraform-aws-modules/security-group/aws"
+  version = "~> 4.0"
+
+  name        = local.name
+  description = "Autoscaling group security group"
+  vpc_id      = module.vpc.vpc_id
+
+  ingress_cidr_blocks = ["0.0.0.0/0"]
+  ingress_rules       = ["https-443-tcp"]
+
+  egress_rules = ["all-all"]
+
+  tags = local.tags
 }
 
 module "vpc" {
@@ -40,126 +195,25 @@ module "vpc" {
   version = "~> 3.0"
 
   name = local.name
+  cidr = "10.99.0.0/18"
 
-  cidr = "10.1.0.0/16"
+  azs             = ["${local.region}a", "${local.region}b", "${local.region}c"]
+  public_subnets  = ["10.99.0.0/24", "10.99.1.0/24", "10.99.2.0/24"]
+  private_subnets = ["10.99.3.0/24", "10.99.4.0/24", "10.99.5.0/24"]
 
-  azs             = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
-  private_subnets = ["10.1.1.0/24", "10.1.2.0/24"]
-  public_subnets  = ["10.1.11.0/24", "10.1.12.0/24"]
+  enable_nat_gateway      = true
+  single_nat_gateway      = true
+  enable_dns_hostnames    = true
+  map_public_ip_on_launch = false
 
-  enable_nat_gateway = false # false is just faster
-
-  tags = {
-    Environment = local.environment
-    Name        = local.name
-  }
+  tags = local.tags
 }
 
-#----- ECS --------
-module "ecs" {
-  source = "terraform-aws-modules/ecs/aws"
+resource "aws_cloudwatch_log_group" "this" {
+  name              = "/aws/ecs/${local.name}"
+  retention_in_days = 7
 
-  name               = local.name
-  container_insights = true
-
-  capacity_providers = ["FARGATE", "FARGATE_SPOT", aws_ecs_capacity_provider.prov1.name]
-
-  default_capacity_provider_strategy = [{
-    capacity_provider = aws_ecs_capacity_provider.prov1.name # "FARGATE_SPOT"
-    weight            = "1"
-  }]
-
-  tags = {
-    Environment = local.environment
-  }
+  tags = local.tags
 }
 
-module "ec2_profile" {
-  source = "terraform-aws-modules/ecs/aws//modules/ecs-instance-profile"
-
-  name    = local.name
-  version = "3.1.0"
-
-  tags = {
-    Environment = local.environment
-  }
-}
-
-resource "aws_ecs_capacity_provider" "prov1" {
-  name = "prov1"
-
-  auto_scaling_group_provider {
-    auto_scaling_group_arn = module.asg.autoscaling_group_arn
-  }
-
-}
-
-#----- ECS  Services--------
-module "hello_world" {
-  source = "./service-hello-world"
-
-  cluster_id = module.ecs.ecs_cluster_id
-}
-
-#----- ECS  Resources--------
-
-#For now we only use the AWS ECS optimized ami <https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html>
-data "aws_ami" "amazon_linux_ecs" {
-  most_recent = true
-
-  owners = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn-ami-*-amazon-ecs-optimized"]
-  }
-
-  filter {
-    name   = "owner-alias"
-    values = ["amazon"]
-  }
-}
-
-module "asg" {
-  source  = "terraform-aws-modules/autoscaling/aws"
-  version = "~> 4.0"
-
-  name = local.ec2_resources_name
-
-  # Launch configuration
-  lc_name   = local.ec2_resources_name
-  use_lc    = true
-  create_lc = true
-
-  image_id                 = data.aws_ami.amazon_linux_ecs.id
-  instance_type            = "t2.micro"
-  security_groups          = [module.vpc.default_security_group_id]
-  iam_instance_profile_arn = module.ec2_profile.iam_instance_profile_arn
-  user_data = templatefile(
-    "${path.module}/templates/user_data.sh.tpl",
-    { cluster_name = local.name },
-  )
-
-  # Auto scaling group
-  vpc_zone_identifier       = module.vpc.private_subnets
-  health_check_type         = "EC2"
-  min_size                  = 0
-  max_size                  = 2
-  desired_capacity          = 2
-  wait_for_capacity_timeout = 0
-
-  tags = [
-    {
-      key                 = "Environment"
-      value               = local.environment
-      propagate_at_launch = true
-    },
-    {
-      key                 = "Cluster"
-      value               = local.name
-      propagate_at_launch = true
-    },
-  ]
-}
-
-# End of section copied from https://github.com/terraform-aws-modules/terraform-aws-ecs/blob/v3.1.0/examples/complete-ecs/main.tf
+# End section copied from https://github.com/terraform-aws-modules/terraform-aws-ecs/blob/v4.1.3/examples/complete/main.tf
