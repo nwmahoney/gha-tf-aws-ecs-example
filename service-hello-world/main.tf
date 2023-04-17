@@ -1,33 +1,33 @@
 resource "aws_cloudwatch_log_group" "this" {
-  name_prefix       = "hello_world-"
+  name_prefix       = "${var.name}-"
   retention_in_days = 1
 }
 
 resource "aws_ecs_task_definition" "this" {
-  family = "hello_world"
+  family = var.name
 
-  container_definitions = <<EOF
-[
-  {
-    "name": "hello_world",
-    "image": "nginx:latest",
-    "cpu": 0,
-    "memory": 128,
-    "logConfiguration": {
-      "logDriver": "awslogs",
-      "options": {
-        "awslogs-region": "${var.region}",
-        "awslogs-group": "${aws_cloudwatch_log_group.this.name}",
-        "awslogs-stream-prefix": "ec2"
+  container_definitions = jsonencode(
+    [
+      {
+        name   = var.name
+        image  = var.app_image
+        cpu    = 0
+        memory = 128
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-region"        = var.region
+            "awslogs-group"         = aws_cloudwatch_log_group.this.name
+            "awslogs-stream-prefix" = "ec2"
+          }
+        }
       }
-    }
-  }
-]
-EOF
+    ]
+  )
 }
 
 resource "aws_ecs_service" "this" {
-  name            = "hello_world"
+  name            = var.name
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.this.arn
 
